@@ -1,0 +1,11 @@
+# секреты и данные гостей
+.env
+bookings.csv
+
+# служебные файлы
+node_modules/
+bot.pid
+
+# логи
+logs/
+*.log

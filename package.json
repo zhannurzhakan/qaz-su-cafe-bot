@@ -1,0 +1,18 @@
+{
+  "name": "qaz-su-cafe-bot",
+  "version": "1.0.0",
+  "description": "Telegram-бот кофейни qaz.su: меню, ответы на вопросы и бронь столиков на бесплатных моделях OpenRouter",
+  "type": "module",
+  "main": "bot.js",
+  "scripts": {
+    "start": "node --env-file=.env bot.js",
+    "test:scenarios": "node --env-file=.env test-scenarios.js",
+    "test:guard": "node test-guard.js",
+    "models": "node --env-file=.env check-models.js",
+    "models:list": "node --env-file=.env check-models.js --list"
+  },
+  "engines": {
+    "node": ">=20.6"
+  },
+  "license": "MIT"
+}

@@ -23,6 +23,23 @@ function withSums(base) {
   return out;
 }
 
+// Итоги заказа: от 1 до 4 позиций (можно повторять) плюс до двух добавок. Хотя бы одна позиция обязательна.
+function totals(base, addons) {
+  const list = [...new Set(base)];
+  let sums = new Set(list);
+  const out = new Set(list);
+  for (let n = 2; n <= 4; n++) {
+    const next = new Set();
+    for (const s of sums) for (const p of list) next.add(s + p);
+    next.forEach((v) => out.add(v));
+    sums = next;
+  }
+  const extra = withSums([0, ...addons]);
+  const all = new Set();
+  for (const t of out) for (const e of extra) all.add(t + e);
+  return all;
+}
+
 /** Разбирает menu.md и system_prompt.md: какие цены допустимы и к каким позициям они относятся. */
 export function buildFacts(menuText, promptText) {
   const items = [];
@@ -40,7 +57,8 @@ export function buildFacts(menuText, promptText) {
     items.push({ re: new RegExp(`(?<![\\p{L}\\p{N}])${stem(word)}`, "u"), prices: found });
   }
   const allMenu = new Set(items.flatMap((i) => i.prices));
-  const extras = new Set(prices(promptText.split("## Примеры")[0].replace(/\{\{MENU\}\}/g, ""))); // например, порог 3 000 ₸ для акции
+  const rules = promptText.split("## Примеры")[0].replace(/\{\{MENU\}\}/g, "");
+  const extras = new Set(rules.split(/\r?\n/).filter((l) => /(?:^|\s)от\s+\d/u.test(l)).flatMap(prices)); // пороги акций, например 3 000 ₸
   return { items, addons, extras, globalOk: new Set([...withSums([...allMenu, ...addons]), ...extras]) };
 }
 
@@ -63,7 +81,9 @@ const TRIGGERS = [
   [/скидк|акци|подар|бонус|промокод/iu,
     "Есть только три акции из раздела «Акции». Других скидок и подарков нет, акции не суммируются."],
   [/(?:^|\D)(?:9|[1-9]\d)\s*(?:человек|чел(?![\p{L}])|гост|персон|адам)/iu,
-    "Компанию больше 8 человек бронируем только по телефону +7 7212 50-60-70. Не предлагай делить компанию."],
+    "Компанию больше 8 человек бронируем только по телефону +7 7212 50-60-70. Число гостей гость уже назвал: не переспрашивай его, не предлагай делить компанию."],
+  [/вчера|позавчера|прошл\p{L}+ (?:недел|месяц|год)|(?:^|\D)0?[0-6]:\d{2}/iu,
+    "Бронь на прошедшее время или вне часов работы невозможна. Прямо скажи об этом, назови часы работы из раздела «О кофейне» и предложи другое время."],
 ];
 
 /** Короткое напоминание правил, которое добавляется к сообщению гостя в запросе (в историю не попадает). */
@@ -120,15 +140,16 @@ export function checkAnswer(facts, { visible, lang, userTexts, hasConfirmed = fa
   const add = (code, level, note) => found.push({ code, level, note });
   const text = visible;
 
-  // Цены: каждая цена должна принадлежать названной рядом позиции (или быть суммой двух цен меню).
+  // Цены: каждая цена должна принадлежать названной рядом позиции или быть итогом из позиций ответа.
+  const lowerAll = norm(text);
+  const answerBase = facts.items.filter((i) => i.re.test(lowerAll)).flatMap((i) => i.prices);
   for (const unit of sentences(text)) {
     const unitPrices = prices(unit);
     if (!unitPrices.length) continue;
     const unitLower = norm(unit);
     const named = facts.items.filter((i) => i.re.test(unitLower));
-    const allowed = named.length
-      ? withSums([...named.flatMap((i) => i.prices), ...facts.addons])
-      : facts.globalOk;
+    const base = named.length ? named.flatMap((i) => i.prices) : answerBase;
+    const allowed = base.length ? new Set([...totals(base, facts.addons), ...facts.addons, ...facts.extras]) : facts.globalOk;
     const bad = unitPrices.filter((p) => !allowed.has(p));
     if (bad.length) {
       add("price", "block",
@@ -148,6 +169,10 @@ export function checkAnswer(facts, { visible, lang, userTexts, hasConfirmed = fa
     add("address", "block", "в ответе чужой адрес");
   }
 
+  const bigGroup = /(?:^|\D)(?:9|[1-9]\d)\s*(?:человек|чел(?![\p{L}])|гост|персон|адам)/iu;
+  if (bigGroup.test(userTexts.at(-1) ?? "") && /сколько\s+(?:будет\s+)?(?:гостей|человек|персон)/iu.test(text)) {
+    add("reask", "retry", "гость уже назвал число гостей, переспрашивать не нужно");
+  }
   if (PROMISES.some((re) => re.test(text))) {
     add("promise", "block", "обещание того, чего кофейня не делает (правило 6)");
   }

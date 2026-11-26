@@ -732,6 +732,14 @@ export class CafeAssistant {
       return reply(text, { confirmId: draftId });
     }
 
+    if (errors.some((e) => e.code === "guests")) { // большая компания: дальше только по телефону, число гостей не переспрашиваем
+      s.intake = null;
+      s.pending = null;
+      const text = rejectText(errors.find((e) => e.code === "guests"), s.lang);
+      s.push({ role: "assistant", content: text });
+      return reply(text);
+    }
+
     it.state = "collecting";
     it.asking = missing[0];
     s.pending = null;

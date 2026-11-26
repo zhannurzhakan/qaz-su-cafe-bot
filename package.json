@@ -8,6 +8,8 @@
     "start": "node --env-file=.env bot.js",
     "test:scenarios": "node --env-file=.env test-scenarios.js",
     "test:guard": "node test-guard.js",
+    "test:hard": "node --env-file=.env test-hard.js",
+    "test:reasoning": "node --env-file=.env test-reasoning.js",
     "models": "node --env-file=.env check-models.js",
     "models:list": "node --env-file=.env check-models.js --list"
   },

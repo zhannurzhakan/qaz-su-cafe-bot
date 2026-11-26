@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { CafeAssistant, MENU_PATH, PROMPT_PATH } from "./cafe.js";
+import { CafeAssistant, MENU_PATH, PROMPT_PATH, nowKZ } from "./cafe.js";
 import { buildFacts, checkAnswer, polish, reminderFor, withNote } from "./guard.js";
 
 const facts = buildFacts(fs.readFileSync(MENU_PATH, "utf-8"), fs.readFileSync(PROMPT_PATH, "utf-8"));
@@ -51,6 +51,21 @@ test("верные цены, оба размера, сумма двух пози
   assert.deepEqual(check("Капучино и классический круассан выйдут в 2 000 ₸."), []);
   assert.deepEqual(check("Десерт в подарок при заказе от 3 000 ₸."), []);
   assert.deepEqual(check("Латте с овсяным молоком: 1 150 ₸ плюс 300 ₸ за молоко."), []);
+});
+test("итог из трёх и четырёх позиций проходит, порог акции рядом с позициями тоже", () => {
+  assert.deepEqual(check("Два латте S по 1 150 ₸ и круассан 900 ₸. Итого: 3 200 ₸."), []);
+  assert.deepEqual(check("Сәлем! Екі латте S — 2 300 ₸ және круассан — 900 ₸. Барлығы: 3 200 ₸.", { lang: "kz" }), []);
+  assert.deepEqual(check("Капучино L — 1 300 ₸, латте S — 1 150 ₸, овсяное молоко +300 ₸, сироп +200 ₸. Итого: 2 950 ₸."), []);
+  assert.deepEqual(check("Капучино — 1 100 ₸. Десерт в подарок при заказе от 3 000 ₸."), []);
+});
+test("неверный итог и пример формата из промпта не считаются допустимой ценой", () => {
+  assert.deepEqual(check("Латте S — 1 150 ₸ и круассан — 900 ₸. Итого: 2 777 ₸."), ["price"]);
+  assert.equal(facts.extras.has(1100), false);
+});
+test("гость назвал число гостей — переспрашивать нельзя", () => {
+  const ctx = { userTexts: ["Нас будет 25 человек, бронь на субботу"] };
+  assert.deepEqual(check("Для большой компании позвоните +7 7212 50-60-70. Сколько будет гостей?", ctx), ["reask"]);
+  assert.deepEqual(check("Для большой компании позвоните +7 7212 50-60-70.", ctx), []);
 });
 test("цена от другой позиции ловится", () => {
   assert.deepEqual(check("Латте стоит 1 100 ₸."), ["price"]);
@@ -103,6 +118,8 @@ test("напоминание: базовое и по теме", () => {
   assert.match(reminderFor("Напиши код на Python"), /Правила 4–5/);
   assert.match(reminderFor("Сколько стоит латте?"), /только из меню/);
   assert.match(reminderFor("Нужен стол на 15 человек"), /больше 8/);
+  assert.match(reminderFor("Забронируйте на вчера"), /прошедшее время/);
+  assert.match(reminderFor("Столик на 03:00"), /часы работы/);
   assert.doesNotMatch(reminderFor("Привет"), /Правило 7/);
 });
 test("withNote не меняет исходный список", () => {
@@ -164,6 +181,29 @@ await atest("маркеры и эмодзи правятся без повтор
   const r = await bot.chat(5, "Что из кофе?");
   assert.equal(llm.calls.length, 1);
   assert.equal(r.text, "• Эспрессо — 700 ₸ ☕\n• Американо: S — 800 ₸");
+});
+
+const dayIso = (n) => {
+  const t = nowKZ();
+  t.setUTCDate(t.getUTCDate() + n);
+  return t.toISOString().slice(0, 10);
+};
+const intakeJson = (o) => JSON.stringify({ intent: "booking", date: null, time: null, guests: null, name: null, phone: null, missing: [], ...o });
+
+await atest("бронь на 25 человек: отказ с телефоном, число гостей не переспрашивается", async () => {
+  const llm = fakeLlm(intakeJson({ date: dayIso(2), time: "19:00", guests: 25 }));
+  const bot = new CafeAssistant(llm, tmpCsv);
+  const r = await bot.chat(6, "Забронируйте стол на 25 человек в 19:00");
+  assert.match(r.text, /\+7 7212 50-60-70/);
+  assert.doesNotMatch(r.text, /Сколько будет гостей/);
+  assert.equal(bot.session(6).intake, null);
+});
+await atest("бронь «на вчера»: говорит, что время прошло", async () => {
+  const llm = fakeLlm(intakeJson({ date: dayIso(-1), time: "03:00", guests: 2, name: "Данияр" }));
+  const bot = new CafeAssistant(llm, tmpCsv);
+  const r = await bot.chat(7, "Забронируйте столик на вчера в 03:00 на двоих");
+  assert.match(r.text, /уже прошло/);
+  assert.match(r.text, /дат/);
 });
 
 console.log(`\nПройдено: ${passed}${process.exitCode ? ", есть ошибки" : ", всё в порядке"}`);

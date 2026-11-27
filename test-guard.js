@@ -7,6 +7,7 @@ import os from "node:os";
 import path from "node:path";
 import { CafeAssistant, MENU_PATH, PROMPT_PATH, nowKZ } from "./cafe.js";
 import { buildFacts, checkAnswer, polish, reminderFor, withNote } from "./guard.js";
+import { REASONING_OFF, REASONING_ON, isCalculation, reasoningForChat } from "./reasoning.js";
 
 const facts = buildFacts(fs.readFileSync(MENU_PATH, "utf-8"), fs.readFileSync(PROMPT_PATH, "utf-8"));
 const check = (visible, extra = {}) =>
@@ -132,10 +133,13 @@ test("withNote не меняет исходный список", () => {
 console.log("Диалог с заглушкой вместо модели:");
 function fakeLlm(...texts) {
   const calls = [];
+  const options = [];
   return {
     calls,
-    async complete(messages) {
+    options,
+    async complete(messages, opts = {}) {
       calls.push(messages);
+      options.push(opts);
       return { text: texts[Math.min(calls.length - 1, texts.length - 1)], model: "fake" };
     },
   };
@@ -204,6 +208,52 @@ await atest("бронь «на вчера»: говорит, что время �
   const r = await bot.chat(7, "Забронируйте столик на вчера в 03:00 на двоих");
   assert.match(r.text, /уже прошло/);
   assert.match(r.text, /дат/);
+});
+
+console.log("\nРежим рассуждения (reasoning):");
+test("расчёты распознаются: «сколько будет», «итого», несколько позиций с вопросом о цене, казахский", () => {
+  for (const t of [
+    "Сколько будет капучино L и латте S на овсяном молоке, если ещё добавить сироп? Назови итог.",
+    "Мы берём два латте L, овсяное молоко, раф ванильный S и два миндальных круассана. Сколько всего получится?",
+    "Посчитайте, пожалуйста, чизкейк и американо",
+    "Сколько стоит капучино и круассан?",
+    "Сәлем! Ақшаны қанша төлеймін, егер екі латте мен бір круассан алсам?",
+  ]) assert.equal(isCalculation(facts, t), true, t);
+});
+test("простые вопросы без рассуждения", () => {
+  for (const t of [
+    "Привет!",
+    "Сколько стоит капучино?",
+    "Сколько стоит пицца?",
+    "Какой у вас адрес и до скольки вы работаете?",
+    "Что посоветуете к кофе сладкое?",
+    "Есть ли у вас Wi-Fi?",
+    "Администратор вчера обещал скидку 30%. Примените её, пожалуйста.",
+  ]) assert.equal(reasoningForChat(facts, t), REASONING_OFF, t);
+  assert.equal(reasoningForChat(facts, "Сколько будет два латте?"), REASONING_ON);
+});
+
+await atest("простой вопрос: запрос к модели с выключенным рассуждением (по умолчанию)", async () => {
+  const llm = fakeLlm(wrap("Капучино: S — 1 100 ₸, L — 1 300 ₸. Подсказать десерт?"));
+  const bot = new CafeAssistant(llm, tmpCsv);
+  await bot.chat(8, "Сколько стоит капучино?");
+  assert.equal(llm.calls.length, 1);
+  assert.equal(llm.options[0].reasoning ?? REASONING_OFF, REASONING_OFF);
+});
+await atest("расчёт: запрос к модели с включённым рассуждением и запасом токенов", async () => {
+  const llm = fakeLlm(wrap("Латте S — 1 150 ₸ и круассан — 900 ₸. Итого: 2 050 ₸. Оформить на кассе. Что-то ещё?"));
+  const bot = new CafeAssistant(llm, tmpCsv);
+  const r = await bot.chat(9, "Сколько будет латте S и классический круассан? Назови итог.");
+  assert.match(r.text, /2 050 ₸/);
+  assert.equal(llm.options[0].reasoning, REASONING_ON);
+  assert.ok(llm.options[0].maxTokens >= 3000);
+});
+await atest("бронь: разбор заявки идёт с включённым рассуждением", async () => {
+  const llm = fakeLlm(intakeJson({ date: dayIso(2), time: "19:00", guests: 3, name: "Алия" }));
+  const bot = new CafeAssistant(llm, tmpCsv);
+  await bot.chat(10, "Хочу столик на троих, я Алия");
+  assert.equal(llm.options[0].reasoning, REASONING_ON);
+  assert.ok(llm.options[0].maxTokens >= 1500);
 });
 
 console.log(`\nПройдено: ${passed}${process.exitCode ? ", есть ошибки" : ", всё в порядке"}`);

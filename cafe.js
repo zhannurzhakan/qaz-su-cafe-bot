@@ -13,6 +13,7 @@ import {
   FIELDS, INTAKE_TEXTS, INTAKE_TRIGGER_RE, QUESTIONS, RETRY_REMINDER,
   buildIntakePrompt, isYes, parseIntakeJson, parseNo,
 } from "./intake.js";
+import { REASONING_OFF, REASONING_ON, reasoningForChat } from "./reasoning.js";
 
 const log = getLogger("cafe");
 
@@ -149,9 +150,10 @@ export class LLM {
     this.cooldown = new Map(); // модель -> время (мс), до которого её не трогаем
   }
 
-  /** Возвращает {text, model}. Модели перебираются по порядку при 429, ошибках и пустом ответе. */
+  /** Возвращает {text, model, reasoning}. Модели перебираются по порядку при 429, ошибках и пустом ответе. */
   // maxTokens с запасом: модель сначала пишет размышление, потом ответ.
-  async complete(messages, { temperature = 0.3, maxTokens = 1800 } = {}) {
+  // reasoning — параметр OpenRouter: по умолчанию выключено, для брони и расчётов включает cafe.js.
+  async complete(messages, { temperature = 0.3, maxTokens = 1800, reasoning = REASONING_OFF } = {}) {
     const now = Date.now();
     const ready = this.models.filter((m) => (this.cooldown.get(m) ?? 0) <= now);
     for (const model of ready.length ? ready : this.models) {
@@ -160,7 +162,7 @@ export class LLM {
         messages,
         temperature,
         max_tokens: maxTokens,
-        reasoning: { enabled: false, exclude: true },
+        reasoning,
       };
       const started = Date.now();
       let res;
@@ -204,13 +206,14 @@ export class LLM {
         log.warn(`${model}: ошибка провайдера ${code}`);
         continue;
       }
-      const text = data.choices?.[0]?.message?.content ?? "";
+      const message = data.choices?.[0]?.message ?? {};
+      const text = message.content ?? "";
       if (typeof text !== "string" || !text.trim()) {
         log.warn(`${model}: пустой ответ`);
         continue;
       }
       log.info(`ответила ${model} за ${((Date.now() - started) / 1000).toFixed(1)} с`);
-      return { text, model };
+      return { text, model, reasoning: (message.reasoning ?? message.reasoning_content ?? "").trim() };
     }
     throw new LLMUnavailable("ни одна модель не ответила");
   }
@@ -546,9 +549,13 @@ export class CafeAssistant {
     let answer = "";
     let found = [];
     let note = reminderFor(userText); // напоминание правил; после нарушения к нему добавляется разбор
+    // Рассуждение включаем только для расчётов; простые вопросы идут без него (бронь разбирает #extract).
+    const reasoning = reasoningForChat(this.facts, userText);
+    const options = reasoning === REASONING_ON ? { reasoning, maxTokens: 3500 } : {};
     try {
       for (let attempt = 1; attempt <= GUARD_ATTEMPTS; attempt++) {
-        const { text } = await this.llm.complete(withNote(messages, note));
+        const { text, reasoning: nativeThinking } = await this.llm.complete(withNote(messages, note), options);
+        if (nativeThinking) log.thinking(`рассуждение модели (чат ${chatId}):\n${nativeThinking}`);
         const parts = splitReasoning(text);
         if (parts.thinking) log.thinking(`размышление (чат ${chatId}):\n${parts.thinking}`);
         if (!parts.answer) {
@@ -638,7 +645,9 @@ export class CafeAssistant {
     const system = buildIntakePrompt({ todayBlock: nowBlock(now), known: it.draft, asking: it.asking });
     let messages = [{ role: "system", content: system }, { role: "user", content: text }];
     for (let attempt = 1; attempt <= 2; attempt++) {
-      const { text: raw } = await this.llm.complete(messages, { temperature: 0, maxTokens: 300 });
+      // Разбор брони (даты вроде «в пятницу», «завтра», номера телефонов): здесь рассуждение включено всегда.
+      // Текст рассуждения не логируем: в нём цитируются имя и телефон гостя.
+      const { text: raw } = await this.llm.complete(messages, { temperature: 0, maxTokens: 2500, reasoning: REASONING_ON });
       try {
         return parseIntakeJson(raw);
       } catch (e) {
